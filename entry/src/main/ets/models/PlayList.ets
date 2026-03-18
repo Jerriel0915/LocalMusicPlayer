@@ -12,6 +12,8 @@ import { TrackInfo } from './TrackInfo';
 export interface PlayListOptions {
   id?: number;
   name?: string;
+  coverUri?: string;
+  description?: string;
   createAt?: number;
   tracks?: TrackInfo[];
 }
@@ -21,8 +23,16 @@ export class PlayList {
   id: number = -1;
   // 歌单名称
   name: string = '';
+  // 歌单封面
+  coverUri: string = '';
+  // 歌单描述
+  description: string = '';
   // 创建时间
   createAt: number = Date.now();
+  // 歌曲数量（数据库查询时填充）
+  trackCount: number = 0;
+  // 第一首歌的文件路径（用于加载封面）
+  firstTrackPath: string = '';
   // 歌单中的歌曲列表 (非数据库字段，用于内存缓存)
   tracks: TrackInfo[] = [];
 
@@ -30,6 +40,8 @@ export class PlayList {
     if (options) {
       this.id = options.id ?? -1;
       this.name = options.name ?? '';
+      this.coverUri = options.coverUri ?? '';
+      this.description = options.description ?? '';
       this.createAt = options.createAt ?? Date.now();
       this.tracks = options.tracks ?? [];
     }
@@ -42,6 +54,26 @@ export class PlayList {
     const playList = new PlayList();
     playList.id = resultSet.getLong(resultSet.getColumnIndex('id'));
     playList.name = resultSet.getString(resultSet.getColumnIndex('name'));
+    
+    // 处理可能为空的字段
+    try {
+      const coverIndex = resultSet.getColumnIndex('cover_uri');
+      if (!resultSet.isColumnNull(coverIndex)) {
+        playList.coverUri = resultSet.getString(coverIndex);
+      }
+    } catch (e) {
+      // 字段可能不存在
+    }
+    
+    try {
+      const descIndex = resultSet.getColumnIndex('description');
+      if (!resultSet.isColumnNull(descIndex)) {
+        playList.description = resultSet.getString(descIndex);
+      }
+    } catch (e) {
+      // 字段可能不存在
+    }
+    
     playList.createAt = resultSet.getLong(resultSet.getColumnIndex('create_at'));
     return playList;
   }
@@ -52,6 +84,8 @@ export class PlayList {
   toValuesBucket(): relationalStore.ValuesBucket {
     const bucket: relationalStore.ValuesBucket = {
       'name': this.name,
+      'cover_uri': this.coverUri,
+      'description': this.description,
       'create_at': this.createAt
     };
 
@@ -60,13 +94,6 @@ export class PlayList {
     }
 
     return bucket;
-  }
-
-  /**
-   * 获取歌曲数量
-   */
-  get trackCount(): number {
-    return this.tracks.length;
   }
 
   /**

@@ -5,6 +5,8 @@
     "pages/Search",
     "pages/LocalMusic",
     "pages/FavoriteMusic",
-    "pages/RecentPlay"
+    "pages/RecentPlay",
+    "pages/PlaylistDetail",
+    "pages/AddToPlaylist"
   ]
 }

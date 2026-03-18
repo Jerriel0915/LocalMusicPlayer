@@ -6,6 +6,8 @@ import { TrackInfo } from '../models/TrackInfo';
 import { AudioSvc } from '../services/AudioSvc';
 import { PlayMode } from '../constants/AppConstants';
 import { emitter } from '@kit.BasicServicesKit';
+import { image } from '@kit.ImageKit';
+import { CoverExtractor } from '../utils/CoverExtractor';
 
 @Component
 export struct MiniPlayer {
@@ -15,6 +17,8 @@ export struct MiniPlayer {
   @State isPlaying: boolean = false;
   // 播放模式
   @State playMode: PlayMode = PlayMode.ORDER;
+  // 专辑封面
+  @State coverPixelMap: image.PixelMap | null = null;
   // 点击展开全屏播放器回调
   onExpand?: () => void;
 
@@ -42,6 +46,35 @@ export struct MiniPlayer {
     this.isPlaying = this.audioSvc.isPlaying();
     this.playMode = this.audioSvc.getPlayMode();
     console.info(`MiniPlayer 状态更新: isPlaying=${this.isPlaying}, track=${this.currentTrack?.title}`);
+    
+    // 加载封面
+    this.loadCover();
+  }
+  
+  /**
+   * 加载当前歌曲的封面
+   */
+  private async loadCover() {
+    if (!this.currentTrack || !this.currentTrack.filePath) {
+      this.coverPixelMap = null;
+      return;
+    }
+    
+    // 先检查缓存
+    const cachedCover = CoverExtractor.getCachedCover(this.currentTrack.filePath);
+    if (cachedCover) {
+      this.coverPixelMap = cachedCover;
+      return;
+    }
+    
+    // 提取封面
+    try {
+      const pixelMap = await CoverExtractor.extractCoverPixelMap(this.currentTrack.filePath);
+      this.coverPixelMap = pixelMap;
+    } catch (err) {
+      console.error('[MiniPlayer] 封面加载失败:', err);
+      this.coverPixelMap = null;
+    }
   }
 
   build() {
@@ -49,44 +82,24 @@ export struct MiniPlayer {
       // 左侧：封面和歌曲信息
       Row() {
         // 封面
-        Stack() {
-          if (this.currentTrack?.coverUri) {
-            Image(this.currentTrack.coverUri)
-              .width(40)
-              .height(40)
-              .borderRadius(4)
-              .objectFit(ImageFit.Cover)
-          } else {
-            Column() {
-              Image($r('app.media.icon_music_note'))
-                .width(24)
-                .height(24)
-                .fillColor('#CCCCCC')
-            }
+        if (this.coverPixelMap) {
+          Image(this.coverPixelMap)
             .width(40)
             .height(40)
-            .backgroundColor('#F0F0F0')
             .borderRadius(4)
-            .justifyContent(FlexAlign.Center)
+            .objectFit(ImageFit.Cover)
+        } else {
+          Column() {
+            Image($r('app.media.icon_music_note'))
+              .width(24)
+              .height(24)
+              .fillColor('#CCCCCC')
           }
-
-          // 旋转动画（播放时）
-          if (this.isPlaying) {
-            Column()
-              .width(40)
-              .height(40)
-              .border({
-                width: 2,
-                color: '#FF4081',
-                style: BorderStyle.Solid
-              })
-              .borderRadius(4)
-              .animation({
-                duration: 3000,
-                iterations: -1,
-                curve: Curve.Linear
-              })
-          }
+          .width(40)
+          .height(40)
+          .backgroundColor('#F0F0F0')
+          .borderRadius(4)
+          .justifyContent(FlexAlign.Center)
         }
 
         // 歌曲信息

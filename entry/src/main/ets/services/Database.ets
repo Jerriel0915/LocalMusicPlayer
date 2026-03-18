@@ -61,6 +61,9 @@ export class Database {
 
       // 创建表
       await this.createTables();
+      
+      // 数据库迁移（添加新列）
+      await this.migrateDatabase();
 
       // 初始化默认歌单
       await this.initDefaultPlaylists();
@@ -70,6 +73,31 @@ export class Database {
     } catch (err) {
       console.error('数据库初始化失败:', err);
       throw new Error('数据库初始化失败: ' + (err instanceof Error ? err.message : String(err)));
+    }
+  }
+  
+  /**
+   * 数据库迁移 - 添加新列
+   */
+  private async migrateDatabase(): Promise<void> {
+    if (!this.rdbStore) {
+      return;
+    }
+    
+    // 尝试添加 cover_uri 和 description 列（如果不存在）
+    const alterSqls: string[] = [
+      `ALTER TABLE ${PLAYLIST_TABLE} ADD COLUMN cover_uri TEXT`,
+      `ALTER TABLE ${PLAYLIST_TABLE} ADD COLUMN description TEXT`
+    ];
+    
+    for (const sql of alterSqls) {
+      try {
+        await this.rdbStore.executeSql(sql);
+        console.info('数据库迁移成功: ' + sql.substring(0, 50));
+      } catch (err) {
+        // 列可能已存在，忽略错误
+        console.info('列已存在，跳过迁移');
+      }
     }
   }
 
@@ -103,6 +131,8 @@ export class Database {
       CREATE TABLE IF NOT EXISTS ${PLAYLIST_TABLE} (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
+        cover_uri TEXT,
+        description TEXT,
         create_at INTEGER NOT NULL
       )
     `;
@@ -364,13 +394,15 @@ export class Database {
    * @param name 歌单名称
    * @returns 歌单 ID
    */
-  async createPlaylist(name: string): Promise<number> {
+  async createPlaylist(name: string, description: string = '', coverUri: string = ''): Promise<number> {
     if (!this.rdbStore) {
       throw new Error('数据库未初始化');
     }
 
     const playlist = new PlayList({
       name: name,
+      description: description,
+      coverUri: coverUri,
       createAt: Date.now()
     });
 
@@ -396,13 +428,34 @@ export class Database {
     const playlists: PlayList[] = [];
 
     try {
-      const predicates = new relationalStore.RdbPredicates(PLAYLIST_TABLE);
-      predicates.orderByDesc('create_at');
+      // 使用 LEFT JOIN 查询歌单及其歌曲数量，同时获取第一首歌的文件路径
+      const sql = `
+        SELECT p.*, 
+               COUNT(pt.track_id) as track_count,
+               (SELECT t.file_path FROM ${TRACK_TABLE} t
+                INNER JOIN ${PLAYLIST_TRACK_TABLE} pt2 ON t.id = pt2.track_id
+                WHERE pt2.playlist_id = p.id
+                ORDER BY pt2.sort_order ASC
+                LIMIT 1) as first_track_path
+        FROM ${PLAYLIST_TABLE} p
+        LEFT JOIN ${PLAYLIST_TRACK_TABLE} pt ON p.id = pt.playlist_id
+        GROUP BY p.id
+        ORDER BY p.create_at DESC
+      `;
 
-      const resultSet = await this.rdbStore.query(predicates);
+      const resultSet = await this.rdbStore.querySql(sql);
 
       while (resultSet.goToNextRow()) {
-        playlists.push(PlayList.fromResultSet(resultSet));
+        const playlist = PlayList.fromResultSet(resultSet);
+        // 获取歌曲数量
+        const trackCountIndex = resultSet.getColumnIndex('track_count');
+        playlist.trackCount = resultSet.getLong(trackCountIndex);
+        // 获取第一首歌的文件路径
+        const firstTrackPathIndex = resultSet.getColumnIndex('first_track_path');
+        if (!resultSet.isColumnNull(firstTrackPathIndex)) {
+          playlist.firstTrackPath = resultSet.getString(firstTrackPathIndex);
+        }
+        playlists.push(playlist);
       }
 
       resultSet.close();
@@ -424,13 +477,22 @@ export class Database {
     }
 
     try {
-      const predicates = new relationalStore.RdbPredicates(PLAYLIST_TABLE);
-      predicates.equalTo('id', id);
+      // 使用 LEFT JOIN 查询歌单及其歌曲数量
+      const sql = `
+        SELECT p.*, COUNT(pt.track_id) as track_count
+        FROM ${PLAYLIST_TABLE} p
+        LEFT JOIN ${PLAYLIST_TRACK_TABLE} pt ON p.id = pt.playlist_id
+        WHERE p.id = ?
+        GROUP BY p.id
+      `;
 
-      const resultSet = await this.rdbStore.query(predicates);
+      const resultSet = await this.rdbStore.querySql(sql, [id.toString()]);
 
       if (resultSet.goToFirstRow()) {
         const playlist = PlayList.fromResultSet(resultSet);
+        // 获取歌曲数量
+        const trackCountIndex = resultSet.getColumnIndex('track_count');
+        playlist.trackCount = resultSet.getLong(trackCountIndex);
         resultSet.close();
 
         // 加载歌单中的歌曲
@@ -457,13 +519,22 @@ export class Database {
     }
 
     try {
-      const predicates = new relationalStore.RdbPredicates(PLAYLIST_TABLE);
-      predicates.equalTo('name', name);
+      // 使用 LEFT JOIN 查询歌单及其歌曲数量
+      const sql = `
+        SELECT p.*, COUNT(pt.track_id) as track_count
+        FROM ${PLAYLIST_TABLE} p
+        LEFT JOIN ${PLAYLIST_TRACK_TABLE} pt ON p.id = pt.playlist_id
+        WHERE p.name = ?
+        GROUP BY p.id
+      `;
 
-      const resultSet = await this.rdbStore.query(predicates);
+      const resultSet = await this.rdbStore.querySql(sql, [name]);
 
       if (resultSet.goToFirstRow()) {
         const playlist = PlayList.fromResultSet(resultSet);
+        // 获取歌曲数量
+        const trackCountIndex = resultSet.getColumnIndex('track_count');
+        playlist.trackCount = resultSet.getLong(trackCountIndex);
         resultSet.close();
 
         // 加载歌单中的歌曲

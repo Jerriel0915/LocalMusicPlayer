@@ -3,6 +3,8 @@
  */
 
 import { TrackInfo } from '../models/TrackInfo';
+import { image } from '@kit.ImageKit';
+import { CoverExtractor } from '../utils/CoverExtractor';
 
 @Component
 export struct TrackItem {
@@ -14,10 +16,69 @@ export struct TrackItem {
   @Prop index: number = -1;
   // 是否显示更多按钮
   @Prop showMore: boolean = true;
+  // 专辑封面
+  @State coverPixelMap: image.PixelMap | null = null;
+  // 准确时长（毫秒）
+  @State accurateDuration: number = 0;
   // 点击回调
   onTrackClick?: (track: TrackInfo) => void;
   // 更多按钮点击回调
   onMoreClick?: (track: TrackInfo) => void;
+
+  aboutToAppear() {
+    this.loadMetadata();
+  }
+  
+  /**
+   * 加载元数据（封面和时长）
+   */
+  private async loadMetadata() {
+    if (!this.track.filePath) {
+      return;
+    }
+    
+    // 先检查缓存
+    const cachedCover = CoverExtractor.getCachedCover(this.track.filePath);
+    const cachedDuration = CoverExtractor.getCachedDuration(this.track.filePath);
+    
+    if (cachedCover) {
+      this.coverPixelMap = cachedCover;
+    }
+    if (cachedDuration > 0) {
+      this.accurateDuration = cachedDuration;
+    }
+    
+    // 如果都有缓存，直接返回
+    if (cachedCover && cachedDuration > 0) {
+      return;
+    }
+    
+    // 提取元数据
+    try {
+      const metadata = await CoverExtractor.extractMetadata(this.track.filePath);
+      if (metadata.cover) {
+        this.coverPixelMap = metadata.cover;
+      }
+      if (metadata.duration > 0) {
+        this.accurateDuration = metadata.duration;
+      }
+    } catch (err) {
+      console.error('[TrackItem] 元数据加载失败:', err);
+    }
+  }
+  
+  /**
+   * 格式化时长
+   */
+  private formatDuration(ms: number): string {
+    if (ms <= 0) {
+      return this.track.formattedDuration;
+    }
+    const totalSeconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+  }
 
   build() {
     Row() {
@@ -72,8 +133,8 @@ export struct TrackItem {
 
       // 封面图
       Stack() {
-        if (this.track.coverUri) {
-          Image(this.track.coverUri)
+        if (this.coverPixelMap) {
+          Image(this.coverPixelMap)
             .width(48)
             .height(48)
             .borderRadius(4)
@@ -135,7 +196,7 @@ export struct TrackItem {
       .margin({ left: 12, right: 8 })
 
       // 时长
-      Text(this.track.formattedDuration)
+      Text(this.formatDuration(this.accurateDuration))
         .fontSize(12)
         .fontColor('#999999')
         .width(45)

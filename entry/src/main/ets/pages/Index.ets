@@ -13,6 +13,8 @@ import { AudioSvc } from '../services/AudioSvc';
 import { MiniPlayer } from '../views/MiniPlayer';
 import { DEFAULT_PLAYLIST_FAVORITE, DEFAULT_PLAYLIST_RECENT, AUDIO_EXTENSIONS } from '../constants/AppConstants';
 import { PlaybackStateStore } from '../utils/PlaybackStateStore';
+import { image } from '@kit.ImageKit';
+import { CoverExtractor } from '../utils/CoverExtractor';
 
 interface MenuItem {
   icon: Resource;
@@ -22,15 +24,75 @@ interface MenuItem {
   onClick: () => void;
 }
 
+/**
+ * 歌单封面组件
+ */
+@Component
+struct PlaylistCover {
+  @Prop firstTrackPath: string = '';
+  @State coverPixelMap: image.PixelMap | null = null;
+
+  aboutToAppear() {
+    this.loadCover();
+  }
+
+  private async loadCover() {
+    if (!this.firstTrackPath) {
+      return;
+    }
+    
+    const cachedCover = CoverExtractor.getCachedCover(this.firstTrackPath);
+    if (cachedCover) {
+      this.coverPixelMap = cachedCover;
+      return;
+    }
+    
+    try {
+      const metadata = await CoverExtractor.extractMetadata(this.firstTrackPath);
+      if (metadata.cover) {
+        this.coverPixelMap = metadata.cover;
+      }
+    } catch (err) {
+      console.error('加载歌单封面失败:', err);
+    }
+  }
+
+  build() {
+    if (this.coverPixelMap) {
+      Image(this.coverPixelMap)
+        .width(48)
+        .height(48)
+        .borderRadius(4)
+        .objectFit(ImageFit.Cover)
+    } else {
+      Column() {
+        Image($r('app.media.play_list'))
+          .width(24)
+          .height(24)
+          .fillColor('#FF4081')
+      }
+      .width(48)
+      .height(48)
+      .backgroundColor('#F5F5F5')
+      .borderRadius(4)
+      .justifyContent(FlexAlign.Center)
+    }
+  }
+}
+
 @Entry
 @Component
 struct Index {
   @State private trackCount: number = 0;
   @State private recentTracks: TrackInfo[] = [];
   @State private favoritePlaylist: PlayList | null = null;
+  @State private playlists: PlayList[] = [];
   @State private isScanning: boolean = false;
   @State private scanProgress: number = 0;
   @State private scanMessage: string = '';
+  @State private showCreatePlaylistDialog: boolean = false;
+  @State private newPlaylistName: string = '';
+  @State private newPlaylistDesc: string = '';
   
   private database: Database = Database.getInstance();
   private audioSvc: AudioSvc = AudioSvc.getInstance();
@@ -70,9 +132,6 @@ struct Index {
       
       // 加载数据
       await this.loadData();
-      
-      // 恢复上次播放状态
-      await this.restorePlaybackState(context);
     } catch (err) {
       console.error('初始化服务失败:', err);
     }
@@ -140,8 +199,36 @@ struct Index {
       // 获取所有歌曲作为最近播放（实际应该按播放时间排序）
       const allTracks = await this.database.getAllTracks();
       this.recentTracks = allTracks.slice(0, 10);
+      
+      // 获取所有歌单（排除默认歌单）
+      const allPlaylists = await this.database.getAllPlaylists();
+      this.playlists = allPlaylists.filter((p: PlayList): boolean => 
+        p.name !== DEFAULT_PLAYLIST_FAVORITE && p.name !== DEFAULT_PLAYLIST_RECENT
+      );
     } catch (err) {
       console.error('加载数据失败:', err);
+    }
+  }
+  
+  /**
+   * 创建新歌单
+   */
+  private async createPlaylist() {
+    if (!this.newPlaylistName.trim()) {
+      promptAction.showToast({ message: '请输入歌单名称' });
+      return;
+    }
+    
+    try {
+      await this.database.createPlaylist(this.newPlaylistName.trim(), this.newPlaylistDesc.trim());
+      this.newPlaylistName = '';
+      this.newPlaylistDesc = '';
+      this.showCreatePlaylistDialog = false;
+      promptAction.showToast({ message: '歌单创建成功' });
+      await this.loadData();
+    } catch (err) {
+      console.error('创建歌单失败:', err);
+      promptAction.showToast({ message: '创建歌单失败' });
     }
   }
 
@@ -489,42 +576,62 @@ struct Index {
             .borderRadius(12)
             .margin({ left: 16, right: 16 })
 
-            // 最近播放列表
-            if (this.recentTracks.length > 0) {
-              Column({ space: 0 }) {
-                Row() {
-                  Text('最近播放')
-                    .fontSize(18)
-                    .fontWeight(FontWeight.Bold)
-                    .fontColor('#333333')
-
-                  Text('查看全部')
+            // 我的歌单
+            Column({ space: 0 }) {
+              Row() {
+                Text('我的歌单')
+                  .fontSize(18)
+                  .fontWeight(FontWeight.Bold)
+                  .fontColor('#333333')
+                
+                Blank()
+                
+                Button() {
+                  Row() {
+                    Image($r('app.media.icon_menu'))
+                      .width(16)
+                      .height(16)
+                      .fillColor('#FF4081')
+                    Text('创建歌单')
+                      .fontSize(14)
+                      .fontColor('#FF4081')
+                      .margin({ left: 4 })
+                  }
+                }
+                .type(ButtonType.Normal)
+                .backgroundColor('transparent')
+                .height(32)
+                .onClick(() => {
+                  this.showCreatePlaylistDialog = true;
+                })
+              }
+              .width('100%')
+              .padding({ left: 16, right: 16, top: 16, bottom: 8 })
+              
+              if (this.playlists.length === 0) {
+                Column() {
+                  Text('暂无歌单')
                     .fontSize(14)
-                    .fontColor('#FF4081')
-                    .onClick(() => {})
+                    .fontColor('#999999')
+                    .margin({ top: 16, bottom: 16 })
                 }
                 .width('100%')
-                .justifyContent(FlexAlign.SpaceBetween)
-                .padding({ left: 16, right: 16, top: 16, bottom: 8 })
-
-                // 歌曲列表（简化显示前5首）
-                ForEach(this.recentTracks.slice(0, 5), (track: TrackInfo, index: number) => {
+              } else {
+                ForEach(this.playlists, (playlist: PlayList) => {
                   Row() {
-                    Text((index + 1).toString())
-                      .fontSize(14)
-                      .fontColor('#999999')
-                      .width(24)
-                      .textAlign(TextAlign.Center)
-
+                    // 封面
+                    PlaylistCover({ firstTrackPath: playlist.firstTrackPath })
+                      .margin({ right: 12 })
+                    
                     Column() {
-                      Text(track.title)
-                        .fontSize(14)
+                      Text(playlist.name)
+                        .fontSize(15)
                         .fontColor('#333333')
                         .maxLines(1)
                         .textOverflow({ overflow: TextOverflow.Ellipsis })
                         .width('100%')
-
-                      Text(track.artist)
+                      
+                      Text(playlist.description || `${playlist.trackCount} 首歌曲`)
                         .fontSize(12)
                         .fontColor('#999999')
                         .margin({ top: 2 })
@@ -534,23 +641,32 @@ struct Index {
                     }
                     .layoutWeight(1)
                     .alignItems(HorizontalAlign.Start)
-                    .margin({ left: 12 })
-
-                    Text(track.formattedDuration)
-                      .fontSize(12)
-                      .fontColor('#999999')
+                    
+                    Image($r('app.media.icon_arrow_right'))
+                      .width(16)
+                      .height(16)
+                      .fillColor('#CCCCCC')
                   }
                   .width('100%')
-                  .height(56)
+                  .height(64)
                   .padding({ left: 16, right: 16 })
-                  .onClick(() => this.playTrack(track))
+                  .onClick(async () => {
+                    try {
+                      await router.pushUrl({
+                        url: 'pages/PlaylistDetail',
+                        params: { playlistId: playlist.id }
+                      });
+                    } catch (err) {
+                      console.error('导航到歌单详情失败:', err);
+                    }
+                  })
                 })
               }
-              .width('100%')
-              .backgroundColor('#FFFFFF')
-              .borderRadius(12)
-              .margin({ left: 16, right: 16 })
             }
+            .width('100%')
+            .backgroundColor('#FFFFFF')
+            .borderRadius(12)
+            .margin({ left: 16, right: 16 })
 
             // 底部留白（给迷你播放器）
             Blank().height(80)
@@ -573,6 +689,76 @@ struct Index {
       }
       .width('100%')
       .position({ bottom: 0 })
+      
+      // 创建歌单对话框
+      if (this.showCreatePlaylistDialog) {
+        Column() {
+          Column() {
+            Text('创建歌单')
+              .fontSize(18)
+              .fontWeight(FontWeight.Bold)
+              .fontColor('#333333')
+              .margin({ bottom: 20 })
+            
+            TextInput({ placeholder: '请输入歌单名称' })
+              .height(48)
+              .width('100%')
+              .backgroundColor('#F5F5F5')
+              .borderRadius(8)
+              .padding({ left: 12, right: 12 })
+              .onChange((value: string) => {
+                this.newPlaylistName = value;
+              })
+            
+            TextArea({ placeholder: '请输入歌单描述（可选）' })
+              .height(80)
+              .width('100%')
+              .backgroundColor('#F5F5F5')
+              .borderRadius(8)
+              .padding(12)
+              .margin({ top: 12 })
+              .onChange((value: string) => {
+                this.newPlaylistDesc = value;
+              })
+            
+            Row({ space: 16 }) {
+              Button('取消')
+                .width(100)
+                .height(40)
+                .backgroundColor('#F5F5F5')
+                .fontColor('#666666')
+                .onClick(() => {
+                  this.showCreatePlaylistDialog = false;
+                  this.newPlaylistName = '';
+                  this.newPlaylistDesc = '';
+                })
+              
+              Button('创建')
+                .width(100)
+                .height(40)
+                .backgroundColor('#FF4081')
+                .fontColor('#FFFFFF')
+                .onClick(() => {
+                  this.createPlaylist();
+                })
+            }
+            .margin({ top: 24 })
+          }
+          .width('80%')
+          .backgroundColor('#FFFFFF')
+          .borderRadius(12)
+          .padding(24)
+        }
+        .width('100%')
+        .height('100%')
+        .backgroundColor('rgba(0,0,0,0.5)')
+        .justifyContent(FlexAlign.Center)
+        .onClick(() => {
+          this.showCreatePlaylistDialog = false;
+          this.newPlaylistName = '';
+          this.newPlaylistDesc = '';
+        })
+      }
     }
     .width('100%')
     .height('100%')
